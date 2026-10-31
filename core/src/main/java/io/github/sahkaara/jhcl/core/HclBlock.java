@@ -38,9 +38,9 @@ public record HclBlock(
 
     /** Convenience factory for a block with no position info. */
     public static HclBlock of(String type,
-                              List<String> labels,
-                              Map<String, HclValue> attributes,
-                              List<HclBlock> blocks) {
+                            List<String> labels,
+                            Map<String, HclValue> attributes,
+                            List<HclBlock> blocks) {
         return new HclBlock(type, labels, attributes, blocks, 0, 0);
     }
 
