@@ -58,7 +58,7 @@ public final class Jhcl {
      */
     public static String format(String source) {
         Objects.requireNonNull(source, "source");
-        return source;
+        return Formatter.format(source);
     }
 
     /**
