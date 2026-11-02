@@ -61,12 +61,15 @@ public final class Jhcl {
         return Formatter.format(source);
     }
 
-    /**
-     * Run static checks on a parsed document. Currently a stub that
-     * returns an empty list — the real linter lands in a later iteration.
-     */
+    /** Run AST-based checks on a parsed document. */
     public static List<Diagnostic> lint(HclDocument document) {
         Objects.requireNonNull(document, "document");
-        return List.of();
+        return Linter.lint(document);
+    }
+
+    /** Run all checks, including source-based ones (I001 formatting). */
+    public static List<Diagnostic> lint(HclDocument document, String source) {
+        Objects.requireNonNull(document, "document");
+        return Linter.lint(document, source);
     }
 }
