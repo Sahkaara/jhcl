@@ -8,17 +8,22 @@ import java.util.Map;
 /**
  * Converts the Map-based output of {@code hcl4j} into jhcl's typed model.
  *
- * <p>hcl4j produces {@code Map<String, Object>}, where:
- * <ul>
- *   <li>a block with N labels becomes N+1 levels of nested maps;</li>
- *   <li>scalars are {@code String}, {@code Double}, {@code Boolean};</li>
- *   <li>lists are {@code ArrayList};</li>
- *   <li>object literals are {@code LinkedHashMap};</li>
- *   <li>bare identifiers such as {@code type = string} become
- *       {@code StringPrimitiveType:string} (a custom hcl4j type).</li>
- * </ul>
+ * <p>hcl4j produces nested maps where each label level adds one depth.
+ * For example:
+ * <pre>
+ * variable "region" { ... }        -&gt; {variable: {region: {attrs}}}
+ * resource "aws_vpc" "main" {...}  -&gt; {resource: {aws_vpc: {main: {attrs}}}}
+ * </pre>
  *
- * <p>The adapter is package-private: users go through {@link Jhcl}.
+ * <p>When multiple blocks of the same type appear (e.g. two
+ * {@code resource} blocks), the label level contains multiple siblings:
+ * <pre>
+ * resource "aws_vpc" "main" {...}
+ * resource "aws_subnet" "pub" {...}
+ *   -&gt; {resource: {aws_vpc: {main: {..}}, aws_subnet: {pub: {..}}}}
+ * </pre>
+ * The adapter expands each sibling into its own {@link HclBlock}, so the
+ * typed model is faithful to the source.
  */
 final class Hcl4jAdapter {
 
@@ -35,7 +40,7 @@ final class Hcl4jAdapter {
             Object value = entry.getValue();
 
             if (value instanceof Map<?, ?> mapValue) {
-                blocks.add(toBlock(key, mapValue));
+                blocks.addAll(toBlocks(key, mapValue));
             } else {
                 attributes.put(key, toValue(value));
             }
@@ -43,40 +48,57 @@ final class Hcl4jAdapter {
         return HclDocument.of(attributes, blocks);
     }
 
-    private static HclBlock toBlock(String type, Map<?, ?> raw) {
-        List<String> labels  = new ArrayList<>();
-        Map<?, ?>    current = raw;
-
-        // Descend through the label levels. Each level has exactly one
-        // key whose value is another Map. We keep descending while that
-        // value is not yet a body (i.e. while it does not contain any
-        // non-Map value).
-        while (current.size() == 1) {
-            Map.Entry<?, ?> only = current.entrySet().iterator().next();
-            if (!(only.getValue() instanceof Map<?, ?> next)) break;
-            labels.add(String.valueOf(only.getKey()));
-            current = next;
-            if (isBody(current)) break;
+    /**
+     * Expand a Map into one or more blocks of the same type. A single Map
+     * can describe multiple sibling blocks when it holds several keys at
+     * the same label depth.
+     */
+    static List<HclBlock> toBlocks(String type, Map<?, ?> raw) {
+        // Base case: this Map is a block body (at least one scalar value,
+        // or empty). Return a single block with no labels.
+        if (isBody(raw)) {
+            return List.of(buildBlock(type, List.of(), raw));
         }
 
+        // Recursive case: all values are Maps, so each entry is a label
+        // branch. Expand each branch and prepend the key as a label.
+        List<HclBlock> result = new ArrayList<>();
+        for (Map.Entry<?, ?> entry : raw.entrySet()) {
+            String label = String.valueOf(entry.getKey());
+            if (entry.getValue() instanceof Map<?, ?> next) {
+                for (HclBlock b : toBlocks(type, next)) {
+                    List<String> newLabels = new ArrayList<>();
+                    newLabels.add(label);
+                    newLabels.addAll(b.labels());
+                    result.add(new HclBlock(type, newLabels,
+                            b.attributes(), b.blocks(),
+                            b.line(), b.column()));
+                }
+            }
+        }
+        return result;
+    }
+
+    private static HclBlock buildBlock(String type, List<String> labels, Map<?, ?> raw) {
         Map<String, HclValue> attributes = new LinkedHashMap<>();
         List<HclBlock>        subBlocks  = new ArrayList<>();
 
-        for (Map.Entry<?, ?> entry : current.entrySet()) {
+        for (Map.Entry<?, ?> entry : raw.entrySet()) {
             String key   = String.valueOf(entry.getKey());
             Object value = entry.getValue();
 
-            if (value instanceof Map<?, ?> mapValue && !isBody(mapValue)) {
-                subBlocks.add(toBlock(key, mapValue));
-            } else {
-                attributes.put(key, toValue(value));
-            }
+            // Object literals (tags = { ... }) and nested blocks both look
+            // like Maps. We treat them as object literals (attributes) by
+            // default. Nested blocks are a known limitation of the
+            // hcl4j→typed adapter and are tracked on the roadmap.
+            attributes.put(key, toValue(value));
         }
         return HclBlock.of(type, labels, attributes, subBlocks);
     }
 
-    /** A map is a "body" if at least one of its values is not a Map. */
+    /** A Map is a "body" if at least one of its values is not a Map. */
     private static boolean isBody(Map<?, ?> map) {
+        if (map.isEmpty()) return true;
         for (Object v : map.values()) {
             if (!(v instanceof Map)) return true;
         }
